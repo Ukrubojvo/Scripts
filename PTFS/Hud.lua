@@ -50,6 +50,10 @@ local YawSensitivity = 150
 local ShowPlaneSymbol = false
 local GPWS = true
 local GPWSExcludeList = {}
+local TooLow = false
+local PullUp = false
+local TerrainAhead = false
+local SinkRatePullUp = false
 
 local Connect = {
     connections = {}
@@ -86,6 +90,10 @@ local ExistingSound2 = workspace:FindFirstChild("TooLowTerrainWarning")
 if ExistingSound2 then
     ExistingSound2:Destroy()
 end
+local ExistingSound3 = workspace:FindFirstChild("SinkRatePullUpWarning")
+if ExistingSound3 then
+    ExistingSound3:Destroy()
+end
 
 local Enabled = true
 local Character = Player.Character or Player.CharacterAdded:Wait()
@@ -96,6 +104,7 @@ local SmoothedSpeed = 0
 
 local terrain_pullup = nil
 local too_low_terrain = nil
+local sinkrate_pullup = nil
 
 run(function()
     for _, part in ipairs(workspace:GetDescendants()) do
@@ -107,17 +116,24 @@ end)
 
 run(function()
     if not isfile("AircraftHud/terrain_pullup.mp3") then writefile("AircraftHud/terrain_pullup.mp3", tostring(game:HttpGetAsync("https://github.com/Ukrubojvo/api/raw/main/terrain-pull-up.mp3"))) end
+    if not isfile("AircraftHud/sinkrate_pullup.mp3") then writefile("AircraftHud/sinkrate_pullup.mp3", tostring(game:HttpGetAsync("https://github.com/Ukrubojvo/api/raw/main/Sinkrate%20Pull%20Up.mp3"))) end
     terrain_pullup = Instance.new("Sound", workspace)
     terrain_pullup.Name = "TerrainPullUpWarning"
     terrain_pullup.SoundId = getcustomasset("AircraftHud/terrain_pullup.mp3")
-    terrain_pullup.Volume = 1
+    terrain_pullup.Volume = 2.5
     terrain_pullup.Looped = true
 
     too_low_terrain = Instance.new("Sound", workspace)
     too_low_terrain.Name = "TooLowTerrainWarning"
     too_low_terrain.SoundId = "rbxassetid://115757279674475"
-    too_low_terrain.Volume = 1
+    too_low_terrain.Volume = 2.5
     too_low_terrain.Looped = true
+
+    sinkrate_pullup = Instance.new("Sound", workspace)
+    sinkrate_pullup.Name = "SinkRatePullUpWarning"
+    sinkrate_pullup.SoundId = getcustomasset("AircraftHud/sinkrate_pullup.mp3")
+    sinkrate_pullup.Volume = 2.5
+    sinkrate_pullup.Looped = true
 end)
 
 run(function()
@@ -574,51 +590,94 @@ run(function()
             end
 
             if GPWS then
+                if PlaneGui and PlaneGui.Enabled ~= true then
+                    if terrain_pullup.IsPlaying then terrain_pullup:Stop() end
+                    if too_low_terrain.IsPlaying then too_low_terrain:Stop() end
+                    if sinkrate_pullup.IsPlaying then sinkrate_pullup:Stop() end
+                    return
+                end
+
                 local RayParams = RaycastParams.new()
                 RayParams.FilterType = Enum.RaycastFilterType.Exclude
-                local GPWSExcludeList = {Character}
+                GPWSExcludeList = { Character }
                 local AircraftFolder = workspace:FindFirstChild("Aircraft")
                 if AircraftFolder then
                     table.insert(GPWSExcludeList, AircraftFolder)
                 end
-
                 RayParams.FilterDescendantsInstances = GPWSExcludeList
 
-                local MaxRayDistance = 5000
-                local TerrainDistance = math.huge
-                local RayResult = workspace:Raycast(HumanoidRootPart.Position,Vector3.new(0, -MaxRayDistance, 0),RayParams)
-                if RayResult then TerrainDistance = (HumanoidRootPart.Position - RayResult.Position).Magnitude end
-                local AGLFeet = TerrainDistance * 3.28
+                local OriginalSpeed = PlaneGui and PlaneGui:FindFirstChild("Panel") and PlaneGui.Panel:FindFirstChild("Speed") and PlaneGui.Panel.Speed:FindFirstChild("Value") and tonumber(string.match(PlaneGui.Panel.Speed.Value.Text, "%d+")) or nil
+                local HorizontalSpeed = Vector3.new(Velocity.X, 0, Velocity.Z).Magnitude
                 local VerticalSpeedFPM = -Velocity.Y * 196.85
-                local TooLow = false
-                local PullUp = false
-                if AGLFeet < 800 and VerticalSpeedFPM > 1500 and SmoothedSpeed > 120 then
-                    TooLow = true
+                local CurrentSpeedKTS = OriginalSpeed or (HorizontalSpeed * 0.6)
+
+                local OriginalAlt = PlaneGui and PlaneGui:FindFirstChild("Panel") and PlaneGui.Panel:FindFirstChild("Altitude") and PlaneGui.Panel.Altitude:FindFirstChild("Value") and tonumber(string.match(PlaneGui.Panel.Altitude.Value.Text, "%d+")) or nil
+                local DownRay = workspace:Raycast(HumanoidRootPart.Position, Vector3.new(0, -5000, 0), RayParams)
+                local AGLFeet = OriginalAlt or (DownRay and (DownRay.Distance * 3.28) or 5000)
+                local ScanDistance = math.clamp(HorizontalSpeed * 12, 1000, 6000)
+                local ForwardRay = nil
+
+                if CurrentSpeedKTS > 160 and AGLFeet < 3000 then
+                    ForwardRay = workspace:Raycast(HumanoidRootPart.Position, HumanoidRootPart.CFrame.LookVector * ScanDistance, RayParams)
                 end
-                if AGLFeet < 500 and VerticalSpeedFPM > 2500 then
-                    PullUp = true
+
+                if ForwardRay then
+                    local ForwardDist = ForwardRay.Distance * 3.28
+                    local PullUpThreshold = math.clamp(CurrentSpeedKTS * 10, 1000, 8000)
+                    if ForwardDist < (PullUpThreshold * 0.9) then
+                        PullUp = true
+                        TerrainAhead = true
+                    elseif ForwardDist < (PullUpThreshold * 1.1) then
+                        TooLow = true
+                        TerrainAhead = true
+                    end
                 end
-                if PullUp then
-                    if too_low_terrain.IsPlaying then
-                        too_low_terrain:Stop()
-                    end
-                    if not terrain_pullup.IsPlaying then
-                        terrain_pullup:Play()
-                    end
-                elseif TooLow then
-                    if terrain_pullup.IsPlaying then
-                        terrain_pullup:Stop()
-                    end
-                    if not too_low_terrain.IsPlaying then
-                        too_low_terrain:Play()
-                    end
+
+                local IsLanding = (AGLFeet < 500 and CurrentSpeedKTS < 160)
+
+                if not IsLanding then
                 else
-                    if terrain_pullup.IsPlaying then
-                        terrain_pullup:Stop()
+                    if TerrainAhead and ForwardRay and (ForwardRay.Distance * 3.28 < 600) then
+                        PullUp = true
+                    else
+                        PullUp = false
+                        TooLow = false
                     end
-                    if too_low_terrain.IsPlaying then
-                        too_low_terrain:Stop()
-                    end
+                end
+
+                local Look = Camera.CFrame.LookVector
+                local PitchDeg = math.deg(math.asin(math.clamp(Look.Y, -1, 1)))
+                if PullUp and PitchDeg > 5 and VerticalSpeedFPM < 3000 then
+                    PullUp = false
+                end
+
+                if AGLFeet < 1250 and VerticalSpeedFPM > 7500 and not IsLanding then
+                    SinkRatePullUp = true
+                else
+                    SinkRatePullUp = false
+                end
+
+                if CurrentSpeedKTS < 40 or VerticalSpeedFPM < -2500 then
+                    PullUp = false
+                    TooLow = false
+                    SinkRatePullUp = false
+                end
+
+                if PullUp then
+                    if not terrain_pullup.IsPlaying then terrain_pullup:Play() end
+                    if too_low_terrain.IsPlaying then too_low_terrain:Stop() end
+                elseif TooLow then
+                    if not too_low_terrain.IsPlaying then too_low_terrain:Play() end
+                    if terrain_pullup.IsPlaying then terrain_pullup:Stop() end
+                else
+                    if terrain_pullup.IsPlaying then terrain_pullup:Stop() end
+                    if too_low_terrain.IsPlaying then too_low_terrain:Stop() end
+                end
+
+                if SinkRatePullUp then
+                    if not sinkrate_pullup.IsPlaying then sinkrate_pullup:Play() end
+                else
+                    if sinkrate_pullup.IsPlaying then sinkrate_pullup:Stop() end
                 end
             end
         end)
